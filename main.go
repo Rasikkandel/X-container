@@ -37,12 +37,12 @@ func run() {
 func child() {
 	fmt.Printf("Running %v as PID %d (new namespace)\n", os.Args[2:], os.Getpid())
 	must(syscall.Sethostname([]byte("container-lab")))
-	rootfs := "/home/rasik-kandel/rootfs"
+	rootfs := "/home/rasik-kandel/rootfs" // change acc to the where the tyo bin, lib , lib64 haru xah 
 
 	must(pivotRoot(rootfs))
-	
+
 	must(syscall.Mount("proc", "/proc", "proc", 0, ""))
-	binary, err := exec.LookPath(os.Args[2])
+	binary, err := exec.LookPath(os.Args[2]) 
 	must(err)
 
 	must(syscall.Exec(binary, os.Args[2:], os.Environ()))
