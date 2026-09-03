@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"syscall"
+	"strconv"
 )
 
 func main() {
@@ -31,7 +32,19 @@ func run() {
 		Cloneflags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNS,
 	}
 
-	must(cmd.Run())
+	must(cmd.Start()) 
+	cgroupPath, err := setupCgroup(
+    "mycontainer",
+    cmd.Process.Pid,
+)
+must(err)
+fmt.Println("cgroup set up at:", cgroupPath)
+
+must(cmd.Wait())
+
+	// cleanup , if cgroup goes out of process 
+_ = os.Remove(cgroupPath)
+
 }
 
 func child() {
@@ -71,6 +84,24 @@ func pivotRoot(newRoot string) error {
 	}
 	return os.RemoveAll(oldRootDir)
 }
+
+func setupCgroup(name string, pid int) (string, error) {
+	cgroupPath := filepath.Join("/sys/fs/cgroup", "mydocker", name)
+	if err := os.MkdirAll(cgroupPath, 0755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(cgroupPath, "memory.max"), []byte("50M"), 0644); err != nil {
+		return "", fmt.Errorf("memory.max: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(cgroupPath, "cpu.max"), []byte("50000 100000"), 0644); err != nil {
+		return "", fmt.Errorf("cpu.max: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(cgroupPath, "cgroup.procs"), []byte(strconv.Itoa(pid)), 0644); err != nil {
+		return "", fmt.Errorf("cgroup.procs: %w", err)
+	}
+	return cgroupPath, nil
+}
+
 
 func must(err error) {
 	if err != nil {
