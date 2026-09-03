@@ -1,107 +1,67 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
-	"os/exec"
+	"os/user"
 	"path/filepath"
-	"syscall"
-	"strconv"
-)
+) 
+
+type config struct {
+	mem    string
+	cpu    float64
+	rootfs string 
+} 
 
 func main() {
+	if len(os.Args) < 2 {
+		usage()
+	}
 	switch os.Args[1] {
 	case "run":
-		run()
+		cmdRun(os.Args[2:])
 	case "child":
-		child()
+		cmdChild(os.Args[2:])
 	default:
-		panic("unknown command: " + os.Args[1])
+		usage()
 	}
 }
 
-func run() {
-	fmt.Printf("Running %v as PID %d (host namespace)\n", os.Args[2:], os.Getpid())
-
-	cmd := exec.Command("/proc/self/exe", append([]string{"child"}, os.Args[2:]...)...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWUTS | syscall.CLONE_NEWPID | syscall.CLONE_NEWNS,
-	}
-
-	must(cmd.Start()) 
-	cgroupPath, err := setupCgroup(
-    "mycontainer",
-    cmd.Process.Pid,
-)
-must(err)
-fmt.Println("cgroup set up at:", cgroupPath)
-
-must(cmd.Wait())
-
-	// cleanup , if cgroup goes out of process 
-_ = os.Remove(cgroupPath)
-
+func usage() {
+	fmt.Println("usage: mygo-docker run [--mem=100m] [--cpu=0.5] [--rootfs=path] <command> [args...]")
+	os.Exit(1)
 }
 
-func child() {
-	fmt.Printf("Running %v as PID %d (new namespace)\n", os.Args[2:], os.Getpid())
-	must(syscall.Sethostname([]byte("container-lab")))
-	rootfs := "/home/rasik-kandel/rootfs" // change acc to the where the tyo bin, lib , lib64 haru xah 
+func cmdRun(args []string) {
+	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	mem := fs.String("mem", "", "memory limit, e.g. 100m")
+	cpu := fs.Float64("cpu", 0, "cpu limit in cores, e.g. 0.5")
+	rootfs := fs.String("rootfs", defaultRootfs(), "path to container rootfs")
+	fs.Parse(args)
 
-	must(pivotRoot(rootfs))
+	target := fs.Args()
+	if len(target) == 0 {
+		usage()
+	}
 
-	must(syscall.Mount("proc", "/proc", "proc", 0, ""))
-	binary, err := exec.LookPath(os.Args[2]) 
-	must(err)
-
-	must(syscall.Exec(binary, os.Args[2:], os.Environ()))
+	// flagset returns the pointer of the flags so, dereferencing it 
+	run(config{mem: *mem, cpu: *cpu, rootfs: *rootfs}, target)
 }
 
-func pivotRoot(newRoot string) error {
-	if err := syscall.Mount("", "/", "", syscall.MS_PRIVATE|syscall.MS_REC, ""); err != nil {
-		return fmt.Errorf("mount private: %w", err)
+func defaultRootfs() string {
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		if u, err := user.Lookup(sudoUser); err == nil {
+			return filepath.Join(u.HomeDir, "rootfs")
+		}
 	}
-	if err := syscall.Mount(newRoot, newRoot, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
-		return fmt.Errorf("bind mount rootfs: %w", err)
-	}
-	oldRootDir := filepath.Join(newRoot, ".old_root")
-	if err := os.MkdirAll(oldRootDir, 0700); err != nil {
-		return err
-	}
-	if err := syscall.PivotRoot(newRoot, oldRootDir); err != nil {
-		return fmt.Errorf("pivot_root: %w", err)
-	}
-	if err := syscall.Chdir("/"); err != nil {
-		return err
-	}
-	oldRootDir = "/.old_root"
-	if err := syscall.Unmount(oldRootDir, syscall.MNT_DETACH); err != nil {
-		return fmt.Errorf("unmount old root: %w", err)
-	}
-	return os.RemoveAll(oldRootDir)
+	return filepath.Join(os.Getenv("HOME"), "rootfs")
 }
 
-func setupCgroup(name string, pid int) (string, error) {
-	cgroupPath := filepath.Join("/sys/fs/cgroup", "mydocker", name)
-	if err := os.MkdirAll(cgroupPath, 0755); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(filepath.Join(cgroupPath, "memory.max"), []byte("50M"), 0644); err != nil {
-		return "", fmt.Errorf("memory.max: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(cgroupPath, "cpu.max"), []byte("50000 100000"), 0644); err != nil {
-		return "", fmt.Errorf("cpu.max: %w", err)
-	}
-	if err := os.WriteFile(filepath.Join(cgroupPath, "cgroup.procs"), []byte(strconv.Itoa(pid)), 0644); err != nil {
-		return "", fmt.Errorf("cgroup.procs: %w", err)
-	}
-	return cgroupPath, nil
+func cmdChild(args []string) {
+	rootfs := os.Getenv("MYGODOCKER_ROOTFS")
+	child(rootfs, args)
 }
-
 
 func must(err error) {
 	if err != nil {
